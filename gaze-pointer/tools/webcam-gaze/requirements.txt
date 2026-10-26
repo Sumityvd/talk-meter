@@ -1,0 +1,5 @@
+mediapipe>=0.10.14
+opencv-python>=4.9
+numpy>=1.26
+onnxruntime-directml>=1.17   # cnn engine; runs on any DirectX 12 GPU, falls back to CPU
+cv2-enumerate-cameras>=1.1   # optional: camera names in --list-cameras

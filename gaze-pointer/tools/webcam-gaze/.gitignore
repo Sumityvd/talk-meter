@@ -1,0 +1,9 @@
+profiles/
+__pycache__/
+.venv/
+bench/
+models/xgaze_*
+build/
+dist/
+*.spec
+models/
