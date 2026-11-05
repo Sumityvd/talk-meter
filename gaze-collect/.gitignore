@@ -6,3 +6,4 @@ dist/
 *.log
 __pycache__/
 supabase/.temp/
+.vercel/

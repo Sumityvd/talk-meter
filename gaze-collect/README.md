@@ -37,16 +37,16 @@ link it, paste `supabase/migrations/*.sql` into the dashboard's SQL editor inste
 `GAZE_MAX_STORED_MB` protects the Free plan's 1 GB, which this shares with whatever else the project stores. Set it
 below what's actually free. When it's reached, new sessions wait in the participant's browser until you sync.
 
-**2. The website:** create a **new, separate** site on your host with:
+**2. The website:** it's a **new, separate** Vercel project, deployed from this folder with the CLI. It isn't connected to Git, so pushes to `main` don't rebuild it, and it can't affect the talk-meter site. Run these from `gaze-collect/`, never from the repo root:
 
-| Setting | Value |
-|---|---|
-| Root directory | `gaze-collect` |
-| Build command | `npm run build` |
-| Output directory | `dist` |
-| Environment variables | `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` (see `.env.example`) |
+```bash
+npx vercel link --yes --project gaze-collect
+npx vercel env add VITE_SUPABASE_URL production        # see .env.example
+npx vercel env add VITE_SUPABASE_ANON_KEY production
+npx vercel deploy --prod
+```
 
-Don't add these to the talk-meter site. It needs HTTPS for the camera, which these hosts provide.
+Once it's online, set `GAZE_ALLOWED_ORIGIN` to its address (step 1). From then on `localhost` can't upload, so use `?offline=1` for local work. The site needs HTTPS for the camera, which Vercel provides.
 
 **3. Your PC:** set these in your environment, never in a file in this repo. The service key can read everything:
 
@@ -87,7 +87,8 @@ These are face images of real people, so:
   doubled, so the site now asks for inches first and refuses impossible sizes. It can't catch a wrong but plausible answer.
 - **Labels are less exact than recordings on your own PC.** Screen size and camera position are self-reported, and an
   unknown camera's field of view uses a default of 65°. The raw files allow reprocessing if a better value is found.
-- **Colour may differ:** a browser delivers camera images through a different path than the Python tracker.
+- **Sideways offset varies between sittings,** by about 2 to 10 degrees with the unmodified ETH-XGaze model. Recordings on the owner's PC vary by the same amount, and it doesn't follow head position, so it comes from the model rather than the site. Personal calibration removes a constant offset, but it adds noise to shared training data.
+- **Colour matches:** on the owner's real webcam, web and Python images had the same brightness and contrast, within about 10%. Other cameras haven't been compared.
 
 Using this data in training (keeping some people out for honest testing) is a separate step.
 

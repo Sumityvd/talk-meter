@@ -1,0 +1,5 @@
+sync/
+supabase/
+tests/
+.env
+.env.local
