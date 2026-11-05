@@ -1,5 +1,9 @@
 # talk-meter
 
+> **Other folders in this repository are separate projects, not part of this site.** Everything above and below
+> describes talk-meter, which uploads nothing. [`gaze-collect/`](gaze-collect/) is a different website that does upload
+> data, with consent; [`gaze-pointer/`](gaze-pointer/) is a desktop eye tracker.
+
 Measures how much of each minute you spend **talking, smiling or quiet**, from
 your face alone, in the browser.
 

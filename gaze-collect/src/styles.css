@@ -1,0 +1,73 @@
+:root {
+  --bg: #f6f8fb;
+  --card: #ffffff;
+  --text: #1c2330;
+  --muted: #5b6575;
+  --border: #dde3ec;
+  --accent: #2b7fd8;
+  --good: #2f9e6b;
+  --warn: #c97a12;
+  --bad: #d64545;
+  color-scheme: light;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #11151c;
+    --card: #1a2029;
+    --text: #e6ebf2;
+    --muted: #9aa5b5;
+    --border: #2c3542;
+    --accent: #5aa2ef;
+    --warn: #e6a644;
+    --bad: #ef7070;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); }
+
+.wrap { max-width: 720px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { margin: 0 0 4px; font-size: 1.6rem; }
+h2 { margin: 0 0 12px; font-size: 1.15rem; }
+h3 { margin: 18px 0 6px; font-size: 1rem; }
+.sub { margin: 0 0 20px; color: var(--muted); }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
+.card label { display: block; margin: 8px 0; }
+.card li { margin: 8px 0; }
+.muted { color: var(--muted); }
+.notice { border-left: 3px solid var(--accent); padding: 8px 12px; background: var(--card); }
+.error { color: var(--bad); }
+input[type="text"], input:not([type]), select { width: 100%; padding: 9px 10px; font: inherit; margin-bottom: 12px; }
+input[type="range"] { width: 100%; }
+button { font: inherit; padding: 8px 14px; cursor: pointer; }
+button.primary { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 10px 18px; margin-top: 10px; }
+button.primary:disabled { opacity: 0.45; cursor: not-allowed; }
+button.link { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; }
+progress { width: 100%; }
+.upload { margin: 12px 0; }
+.card-box { background: var(--accent); opacity: 0.75; border-radius: 6px; margin: 10px 0; max-width: 100%; }
+
+/* Full-screen session */
+.stage { position: fixed; inset: 0; background: #000; color: #eee; overflow: hidden; }
+.center-text { position: absolute; top: 40%; width: 100%; text-align: center; }
+.video.hidden { position: fixed; left: 0; top: 0; width: 2px; height: 2px; opacity: 0.01; pointer-events: none; }
+.video.preview { position: absolute; left: 50%; top: 56px; height: 56vh; aspect-ratio: 16 / 9; transform: translateX(-50%) scaleX(-1); background: #111; }
+.calibration { position: absolute; inset: 0; width: 100%; height: 100%; }
+.positioning h2 { text-align: center; margin: 14px 0 0; position: relative; }
+.oval-space { position: absolute; left: 50%; top: 56px; height: 56vh; aspect-ratio: 16 / 9; transform: translateX(-50%); }
+.oval { position: absolute; left: 50%; top: 45%; height: 62%; aspect-ratio: 3 / 4; transform: translate(-50%, -50%); border: 3px solid #eee; border-radius: 50%; }
+.oval.good { border-color: #5adc5a; }
+.checks { position: absolute; top: calc(56px + 57vh); left: 50%; transform: translateX(-50%); width: min(92vw, 900px); list-style: none; margin: 0; padding: 0; line-height: 1.7; }
+.light { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 6px; }
+.light.green { background: #5adc5a; }
+.light.red { background: #f06060; }
+.hint { color: #fabe28; }
+.good-text { color: #5adc5a; }
+.positioning > progress, .positioning > p { position: absolute; left: 50%; transform: translateX(-50%); width: min(92vw, 900px); }
+.positioning > progress { bottom: 58px; }
+.positioning > p { bottom: 6px; margin: 0; }
+/* Covers the live video, which stays mounted and playing underneath. */
+.confirm { position: fixed; inset: 0; z-index: 10; background: #000; padding: 18vh max(20px, calc(50vw - 380px)) 0; }
