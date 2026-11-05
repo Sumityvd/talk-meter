@@ -83,6 +83,8 @@ These are face images of real people, so:
 
 ## Known limits
 
+- **Screen size matters most.** A misjudged card once recorded a 15.6-inch screen as 9 inches, and label error nearly
+  doubled, so the site now asks for inches first and refuses impossible sizes. It can't catch a wrong but plausible answer.
 - **Labels are less exact than recordings on your own PC.** Screen size and camera position are self-reported, and an
   unknown camera's field of view uses a default of 65°. The raw files allow reprocessing if a better value is found.
 - **Colour may differ:** a browser delivers camera images through a different path than the Python tracker.

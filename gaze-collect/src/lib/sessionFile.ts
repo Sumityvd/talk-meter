@@ -33,6 +33,8 @@ export interface Manifest {
   camera_above_mm: number;
   screen_px: [number, number];
   screen_mm: [number, number];
+  /** "15.6 inches" (the participant's choice) or "card" (measured against a card). */
+  screen_source: string;
   device_pixel_ratio: number;
   frame_size: [number, number];
   posture: Posture;

@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import { checks, cropBox, headMoveProgress, measure, rating, type Point3, type Posture } from "../src/lib/posture";
 import {
-  CALIBRATION_MARGIN, DOT_GRID, HEAD_MOVES, MAX_FPS, gridTargets, hfovFor, pursuitPosition,
+  CALIBRATION_MARGIN, CARD_WIDTH_MM, DOT_GRID, HEAD_MOVES, MAX_FPS, PLAUSIBLE_INCHES, diagonalInches, gridTargets,
+  hfovFor, mmPerCssFromInches, pursuitPosition,
 } from "../src/lib/protocol";
 import { LANDMARKS, buildSessionFile, type Manifest } from "../src/lib/sessionFile";
 
@@ -46,6 +47,21 @@ describe("calibration protocol matches webcam_gaze.py --calibration quick", () =
     expect(pursuitPosition(0)[1]).toBeCloseTo(0.9, 9);
     expect(pursuitPosition(13 / 4)[0]).toBeCloseTo(0.92, 9);
     expect(pursuitPosition(9 / 2)[1]).toBeCloseTo(0.1, 9);
+  });
+
+  it("works out screen size from inches, and catches a misjudged card", () => {
+    // The owner's laptop: 1536 x 864 CSS pixels at 125% scaling, really 344 x 193 mm (15.6 inches).
+    const fromInches = mmPerCssFromInches(15.6, 1536, 864);
+    expect(fromInches * 1536).toBeCloseTo(345.4, 0);
+    expect(fromInches * 864).toBeCloseTo(194.3, 0);
+    expect(diagonalInches(fromInches, 1536, 864)).toBeCloseTo(15.6, 6);
+    // The card set to 654 px on 2026-11-05 implied about 9 inches, which must be refused.
+    const misjudged = diagonalInches(CARD_WIDTH_MM / 654, 1536, 864);
+    expect(misjudged).toBeLessThan(PLAUSIBLE_INCHES[0]);
+    // The correct card width on the same screen is accepted.
+    const correct = diagonalInches(CARD_WIDTH_MM / 382, 1536, 864);
+    expect(correct).toBeGreaterThan(PLAUSIBLE_INCHES[0]);
+    expect(correct).toBeCloseTo(15.5, 0);
   });
 
   it("knows the LifeCam and defaults for others", () => {

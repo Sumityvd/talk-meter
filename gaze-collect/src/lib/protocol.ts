@@ -22,6 +22,19 @@ export const MIN_SAMPLES = 8;
 export const HEAD_MOVE_FRAMES = Math.round(COLLECT_SECONDS * MAX_FPS);
 
 export const CARD_WIDTH_MM = 85.6;
+export const SCREEN_INCHES = [13.3, 14, 15.6, 16, 17.3, 21.5, 24, 27, 32];
+// Outside this, the measurement is wrong rather than the screen unusual. Labels depend directly on screen size:
+// a misjudged card (a "9 inch" laptop) nearly doubled the error on 2026-11-05.
+export const PLAUSIBLE_INCHES: [number, number] = [11, 45];
+
+const MM_PER_INCH = 25.4;
+
+/** Millimetres per CSS pixel for a screen of this diagonal. */
+export const mmPerCssFromInches = (inches: number, cssWidth: number, cssHeight: number) =>
+  (inches * MM_PER_INCH) / Math.hypot(cssWidth, cssHeight);
+
+export const diagonalInches = (mmPerCss: number, cssWidth: number, cssHeight: number) =>
+  (mmPerCss * Math.hypot(cssWidth, cssHeight)) / MM_PER_INCH;
 export const CAMERA_ABOVE_MM = { "built-in": 8, "clip-on": 15 } as const;
 export type CameraPosition = keyof typeof CAMERA_ABOVE_MM;
 export const DEFAULT_HFOV_DEG = 65;

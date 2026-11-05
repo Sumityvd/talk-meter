@@ -111,7 +111,8 @@ def convert(session_file, output, participant=None):
             "device_pixel_ratio", "frame_size", "posture", "warnings", "expected_accuracy", "consent_version",
             "duration_s", "created")
     meta = {key: manifest[key] for key in keys}
-    meta.update(mode="web", source="web", participant=participant, gaze_model=None)
+    meta.update(mode="web", source="web", participant=participant, gaze_model=None,
+                screen_source=manifest.get("screen_source"))
     (output / "meta.json").write_text(json.dumps(meta, indent=1))
     return {"frames": len(rows), "dropped": dropped, "lighting": manifest["lighting"]}
 

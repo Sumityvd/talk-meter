@@ -7,7 +7,10 @@ import {
 } from "./lib/backend";
 import { CalibrationAborted, CalibrationRunner, type View } from "./lib/calibration";
 import { checks, measure, rating, type Check, type Posture } from "./lib/posture";
-import { BLINK_THRESHOLD, CAMERA_ABOVE_MM, CARD_WIDTH_MM, LIGHTINGS, hfovFor, type CameraPosition } from "./lib/protocol";
+import {
+  BLINK_THRESHOLD, CAMERA_ABOVE_MM, CARD_WIDTH_MM, LIGHTINGS, PLAUSIBLE_INCHES, SCREEN_INCHES, diagonalInches, hfovFor,
+  mmPerCssFromInches, type CameraPosition,
+} from "./lib/protocol";
 import { buildSessionFile, sha256Hex, type Manifest } from "./lib/sessionFile";
 import { createLandmarker, listCameras, measureBrightness, openCamera, startFrames, type VideoFrame } from "./lib/tracker";
 
@@ -15,9 +18,18 @@ interface Device {
   deviceId: string;
   label: string;
   position: CameraPosition;
+  mmPerCss: number;
+  /** How the screen size was given: a diagonal in inches, or "card". */
+  screenChoice: number | "card";
   cardPx: number;
   dpr: number;
 }
+
+/** A saved device, unless it's from before screen size was checked (those must be set up again). */
+const readDevice = () => {
+  const device = read<Device>("gaze-device");
+  return device?.mmPerCss ? device : null;
+};
 
 type Stage = "loading" | "join" | "consent" | "setup" | "home" | "starting" | "positioning" | "calibrating" | "saving";
 
@@ -43,7 +55,7 @@ export default function App() {
 
   const [stage, setStage] = useState<Stage>("loading");
   const [code, setCode] = useState(read<string>("gaze-code") ?? "");
-  const [device, setDevice] = useState<Device | null>(read<Device>("gaze-device"));
+  const [device, setDevice] = useState<Device | null>(readDevice());
   const [status, setStatus] = useState<Status | null>(null);
   const [lighting, setLighting] = useState<string>("");
   const [baseline, setBaseline] = useState<{ posture: Posture; warnings: string[]; expected: string } | null>(null);
@@ -86,7 +98,7 @@ export default function App() {
       .then((next) => {
         setCode(activeCode);
         if (!next.consented) setStage("consent");
-        else if (!read<Device>("gaze-device")) setStage("setup");
+        else if (!readDevice()) setStage("setup");
         else {
           setStage("home");
           void sendPending(activeCode);
@@ -294,8 +306,15 @@ function Setup({ video, stream, initial, onDone }: {
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState(initial?.deviceId ?? "");
   const [position, setPosition] = useState<CameraPosition | "other" | "">(initial?.position ?? "");
+  const [screenChoice, setScreenChoice] = useState<number | "card" | "">(initial?.screenChoice ?? "");
   const [cardPx, setCardPx] = useState(initial?.cardPx ?? 324);
   const [error, setError] = useState<string | null>(null);
+
+  const [cssWidth, cssHeight] = [window.screen.width, window.screen.height];
+  const mmPerCss = screenChoice === "card" ? CARD_WIDTH_MM / cardPx
+    : screenChoice === "" ? 0 : mmPerCssFromInches(screenChoice, cssWidth, cssHeight);
+  const inches = diagonalInches(mmPerCss, cssWidth, cssHeight);
+  const plausible = inches >= PLAUSIBLE_INCHES[0] && inches <= PLAUSIBLE_INCHES[1];
 
   useEffect(() => {
     let active = true;
@@ -321,10 +340,25 @@ function Setup({ video, stream, initial, onDone }: {
   return (
     <div className="card">
       <h2>Set up this computer (once)</h2>
-      <h3>1. Measure your screen</h3>
-      <p>Hold a bank or ID card flat against the screen, and move the slider until the blue box is exactly as wide as the card.</p>
-      <div className="card-box" style={{ width: cardPx, height: cardPx * 0.63 }} />
-      <input type="range" min={150} max={900} value={cardPx} onChange={(e) => setCardPx(Number(e.target.value))} aria-label="Card width" />
+      <h3>1. How big is the screen you'll use?</h3>
+      <p>The size in inches, measured corner to corner. Laptops are usually 14 or 15.6 inches; it's in the computer's specifications.</p>
+      <select aria-label="Screen size" value={screenChoice} onChange={(e) => setScreenChoice(e.target.value === "card" ? "card" : e.target.value === "" ? "" : Number(e.target.value))}>
+        <option value="">Choose ...</option>
+        {SCREEN_INCHES.map((size) => <option key={size} value={size}>{size} inches</option>)}
+        <option value="card">I don't know: measure with a card</option>
+      </select>
+      {screenChoice === "card" && (
+        <>
+          <p>Hold a bank or ID card flat against the screen, long side level. Move the slider until the blue box is exactly as wide as the card.</p>
+          <div className="card-box" style={{ width: cardPx, height: cardPx * 0.63 }} />
+          <input type="range" min={150} max={680} value={cardPx} onChange={(e) => setCardPx(Number(e.target.value))} aria-label="Card width" />
+        </>
+      )}
+      {screenChoice !== "" && (plausible ? (
+        <p className="muted">Your screen: about {inches.toFixed(1)} inches ({(mmPerCss * cssWidth / 10).toFixed(1)} x {(mmPerCss * cssHeight / 10).toFixed(1)} cm). If that looks wrong, please correct it: the data depends on it.</p>
+      ) : (
+        <p className="error">That would make your screen {inches.toFixed(1)} inches, which can't be right. Check that the box matches the card's long side exactly.</p>
+      ))}
 
       <h3>2. Choose your camera</h3>
       <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)}>
@@ -340,11 +374,13 @@ function Setup({ video, stream, initial, onDone }: {
       {error && <p className="error">{error}</p>}
       <button
         className="primary"
-        disabled={!deviceId || (position !== "built-in" && position !== "clip-on")}
+        disabled={!deviceId || !plausible || (position !== "built-in" && position !== "clip-on")}
         onClick={() => onDone({
           deviceId,
           label: cameras.find((c) => c.deviceId === deviceId)?.label ?? "",
           position: position as CameraPosition,
+          mmPerCss,
+          screenChoice: screenChoice as number | "card",
           cardPx,
           dpr: window.devicePixelRatio,
         })}
@@ -557,7 +593,7 @@ function Calibrating({ video, frames, device, lighting, consentVersion, baseline
     const cssHeight = window.innerHeight;
     const dpr = window.devicePixelRatio;
     const screenPx: [number, number] = [Math.round(cssWidth * dpr), Math.round(cssHeight * dpr)];
-    const mmPerCss = CARD_WIDTH_MM / device.cardPx;
+    const { mmPerCss } = device;
     const hfov = hfovFor(device.label);
     canvas.width = screenPx[0];
     canvas.height = screenPx[1];
@@ -582,6 +618,7 @@ function Calibrating({ video, frames, device, lighting, consentVersion, baseline
         camera_above_mm: CAMERA_ABOVE_MM[device.position],
         screen_px: screenPx,
         screen_mm: [cssWidth * mmPerCss, cssHeight * mmPerCss],
+        screen_source: device.screenChoice === "card" ? "card" : `${device.screenChoice} inches`,
         device_pixel_ratio: dpr,
         frame_size: [v.videoWidth, v.videoHeight],
         posture: baseline.posture,
