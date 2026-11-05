@@ -1,60 +1,43 @@
-"""Converts the ETH-XGaze pretrained checkpoint to ONNX (run once).
+"""Converts gaze model weights to the ONNX file the tracker runs (gaze_cnn.py).
 
-Input:  models/xgaze_epoch_24_ckpt.pth.tar  (https://github.com/xucong-zhang/ETH-XGaze, "pre-trained model";
-        Zhang et al., ECCV 2020; CC BY-NC-SA 4.0 - personal / non-commercial use only)
-Output: models/xgaze_resnet50.onnx
+Input:  the ETH-XGaze checkpoint models/xgaze_epoch_24_ckpt.pth.tar (https://github.com/xucong-zhang/ETH-XGaze,
+        "pre-trained model"; Zhang et al., ECCV 2020; CC BY-NC-SA 4.0 - personal / non-commercial use only),
+        or with --weights a fine-tuned state_dict from train_gaze.py / train_personal.py (same licence)
+Output: an ONNX file (default models/xgaze_resnet50.onnx)
         input  "face"      float32 [N, 3, 224, 224], normalized face patch, RGB, ImageNet mean/std
         output "gaze"      float32 [N, 2], pitch, yaw (radians) in the normalized camera
         output "embedding" float32 [N, 2048], penultimate ResNet-50 features (for personal calibration)
 
-Usage: py -3.12 export_xgaze_onnx.py
+Usage: D:\\gaze-train\\.venv\\Scripts\\python.exe export_xgaze_onnx.py [--weights best.pth --output models\\x.onnx]
 """
 
-from pathlib import Path
+import argparse
 
 import numpy as np
 import torch
-import torchvision
 
-MODELS = Path(__file__).resolve().parent / "models"
-CHECKPOINT = MODELS / "xgaze_epoch_24_ckpt.pth.tar"
-OUTPUT = MODELS / "xgaze_resnet50.onnx"
-
-
-class XGaze(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.backbone = torchvision.models.resnet50()
-        self.backbone.fc = torch.nn.Identity()
-        self.gaze_fc = torch.nn.Linear(2048, 2)
-
-    def forward(self, face):
-        embedding = self.backbone(face)
-        return self.gaze_fc(embedding), embedding
+from xgaze_model import MODELS, load_model
 
 
 def main():
-    state = torch.load(CHECKPOINT, map_location="cpu", weights_only=True)["model_state"]
-    model = XGaze()
-    # ETH-XGaze's ResNet-50 uses torchvision's layer names; its own fc is defined but unused.
-    backbone = {k[len("gaze_network."):]: v for k, v in state.items()
-                if k.startswith("gaze_network.") and not k.startswith("gaze_network.fc.")}
-    model.backbone.load_state_dict(backbone, strict=True)
-    model.gaze_fc.load_state_dict({"weight": state["gaze_fc.0.weight"], "bias": state["gaze_fc.0.bias"]})
-    model.eval()
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--weights", help="state_dict from train_gaze.py / train_personal.py (default: ETH-XGaze)")
+    parser.add_argument("--output", default=str(MODELS / "xgaze_resnet50.onnx"))
+    args = parser.parse_args()
 
+    model = load_model(args.weights).eval()
     dummy = torch.randn(1, 3, 224, 224)
-    torch.onnx.export(model, dummy, str(OUTPUT), input_names=["face"], output_names=["gaze", "embedding"],
+    torch.onnx.export(model, dummy, args.output, input_names=["face"], output_names=["gaze", "embedding"],
                       dynamic_axes={"face": {0: "n"}, "gaze": {0: "n"}, "embedding": {0: "n"}},
                       opset_version=17, dynamo=False)
 
     import onnxruntime as ort
-    session = ort.InferenceSession(str(OUTPUT), providers=["CPUExecutionProvider"])
+    session = ort.InferenceSession(args.output, providers=["CPUExecutionProvider"])
     gaze, embedding = session.run(None, {"face": dummy.numpy()})
     with torch.no_grad():
         expected, _ = model(dummy)
-    print(f"wrote {OUTPUT} ({OUTPUT.stat().st_size / 1e6:.0f} MB); "
-          f"max |onnx - torch| = {np.abs(gaze - expected.numpy()).max():.2e}, embedding {embedding.shape}")
+    print(f"wrote {args.output}; max |onnx - torch| = {np.abs(gaze - expected.numpy()).max():.2e}, "
+          f"embedding {embedding.shape}")
 
 
 if __name__ == "__main__":

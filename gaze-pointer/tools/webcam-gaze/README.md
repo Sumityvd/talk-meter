@@ -172,3 +172,29 @@ Do 3 runs per engine with the same camera, lighting and seat. Results are saved 
 - Put the camera centred above the screen, 50–70 cm from your eyes.
 - Keep the posture you calibrated in; recalibrate (`r`) after moving the laptop, camera or chair.
 - Set `--distance-cm` to your real eye-to-screen distance so the reported degrees are right.
+
+## Training your own gaze model
+
+The default stays `--gaze-model xgaze` (ETH-XGaze as published). Two fine-tuned models can be trained on top of
+it and selected with `--gaze-model general` or `--gaze-model personal`. `--correction` chooses the personal
+calibration: `full` (default), `shift` or `scale`.
+
+| Script | What it does |
+|---|---|
+| `prepare_mpiifacegaze.py` | Turns MPIIFaceGaze photos into face patches using the tracker's own face pipeline |
+| `train_gaze.py` | Stage A: fine-tunes ETH-XGaze for webcams on MPIIFaceGaze, holding some people out |
+| `train_personal.py` | Stage B: fine-tunes the last network block on one person's recorded calibrations (`sessions/`) |
+| `compare_models.py` | Scores models in on-screen pixels on recorded calibrations |
+| `export_xgaze_onnx.py` | Exports a trained model to ONNX for the tracker |
+
+The scripts use `D:\gaze-data` and `D:\gaze-train` paths, and a separate CUDA PyTorch environment; change those
+paths for your own setup. From source, calibrations record face patches to `sessions/` by default
+(`--no-record-patches` turns that off).
+
+**Not in this repository:** trained weights and recordings (they contain or derive from one person's face images)
+and the datasets. MPIIFaceGaze and ETH-XGaze are CC BY-NC-SA 4.0, so models trained from them are for
+non-commercial use only.
+
+**Measured so far (one person, live):** personal model with `--correction scale` scored 48 px head still and 76 px
+head moved, against GazeFlow's 36 and 35 px on the same test. It has not matched GazeFlow, which is why the default
+hasn't changed.

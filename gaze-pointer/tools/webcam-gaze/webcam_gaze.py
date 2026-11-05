@@ -36,6 +36,7 @@ import mediapipe as mp
 import numpy as np
 from mediapipe.tasks.python import BaseOptions, vision
 
+import gaze_cnn
 import positioning
 
 HERE = Path(__file__).resolve().parent   # bundled resources (models/); inside the .exe build too
@@ -73,6 +74,8 @@ HEAD_MOVES = (
     ("Tilt your chin DOWN", "tilt", 6.0),
     ("Shift your head to the LEFT (don't turn it)", "shift", 4.0),
 )
+FACE_X_COLUMN = 6392              # cnn engine features: face centre x, mm from the camera
+BENCH_HEAD_SHIFT_MM = 30.0        # accuracy test 2/2 waits until the face is this far to one side
 HEAD_MOVE_TIMEOUT_SECONDS = 8.0   # per dot; a dot whose movement never happens is skipped
 FEATURE_Z_CLIP = 3.0      # live features are clipped to +-3 SD of the calibration data
 # Smallest SD used to standardize each feature: natural variation the model must tolerate even if
@@ -106,6 +109,10 @@ BENCH_DIR = DATA_DIR / "bench"
 BENCH_TIMING = (0.45, 0.8, 1.5)   # move, settle, collect seconds per dot (benchmark.py)
 BENCH_PASSES = (("still", (4, 4, 0.1)), ("moved", (3, 3, 0.15)))   # (columns, rows, margin)
 BENCH_LABEL = "ours-calibration"
+RECORD_PATCHES = not FROZEN   # save face patches during calibration (train_gaze.py); --record-patches
+GAZE_MODELS = {"xgaze": "xgaze_resnet50.onnx", "general": "gaze_general.onnx", "personal": "gaze_personal.onnx"}
+GAZE_MODEL = "xgaze"          # set by --gaze-model
+CORRECTION = "full"           # set by --correction
 PURSUIT_SECONDS = 30
 # Calibration lengths. A calibration hardly carries over to a new sitting (2026-10-23 recordings: saved
 # calibration + drift dot 152 px, 40 s top-up 90 px, full fresh calibration 59 px), so a quick fresh
@@ -549,7 +556,8 @@ class CnnFeatureExtractor:
 
     Feature layout: [0:20] landmark features, [20:22] geometric CNN gaze point (px),
     [22:24] CNN pitch/yaw (rad), [24:2072] CNN embedding, [2072:6392] normalized eye pixels (2 x 60x36),
-    [6392:6398] gaze ray in camera space: origin (face centre, mm) and unit direction.
+    [6392:6398] gaze ray in camera space: origin (face centre, mm) and unit direction,
+    [6398] id of the face patch saved by `recorder` (-1 when not recording).
     """
 
     def __init__(self, screen, hfov_deg, camera_above_mm):
@@ -560,6 +568,7 @@ class CnnFeatureExtractor:
         self._geometry = gaze_cnn.ScreenGeometry(width, height, width_mm, height_mm, camera_above_mm)
         self._hfov = hfov_deg
         self._cnn = None
+        self.recorder = None   # PatchRecorder while a calibration records training data
 
     def __call__(self, frame):
         features, info = self._base(frame)
@@ -578,8 +587,32 @@ class CnnFeatureExtractor:
         info["cnn_px"] = result["screen_px"]
         # PnP with the configured field of view measures distance far better than MediaPipe's generic camera.
         info["distance_cm"] = float(result["face_center"][2]) / 10
+        patch_id = self.recorder.record(result["patch"], result["rotation"]) if self.recorder else -1
         return np.concatenate([features, result["screen_px"], result["pitchyaw"], result["embedding"],
-                               result["eyes"], result["face_center"], result["direction"]]), info
+                               result["eyes"], result["face_center"], result["direction"], [patch_id]]), info
+
+
+class PatchRecorder:
+    """Saves each calibration frame's normalized 224x224 face patch (JPEG) and its normalization rotation,
+    as training data for fine-tuning the gaze model (train_gaze.py). The patch id is the last feature
+    column, so the session's sample file links every patch to its target, pass and gaze ray."""
+
+    def __init__(self, directory):
+        self.directory = Path(directory)
+        (self.directory / "patches").mkdir(parents=True, exist_ok=True)
+        self.rotations = []
+
+    def record(self, patch, rotation):
+        patch_id = len(self.rotations)
+        cv2.imwrite(str(self.directory / "patches" / f"{patch_id:05d}.jpg"), patch, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        self.rotations.append(np.asarray(rotation, np.float32))
+        return patch_id
+
+    def save(self, x, y, groups, group_pass, meta):
+        """x rows carry the patch id in their last column; meta: camera/screen geometry for the labels."""
+        np.savez_compressed(self.directory / "session.npz", x=x.astype(np.float32), y=y, groups=groups,
+                            group_pass=np.array(group_pass), rotations=np.array(self.rotations, np.float32))
+        (self.directory / "meta.json").write_text(json.dumps(meta, indent=1))
 
 
 # ----------------------------------------------------------------- model ----
@@ -794,8 +827,105 @@ class CnnGazeModel:
                    np.array(data["weights"]), residual=data.get("residual", False))
 
 
+class ShiftGazeModel:
+    """Simplest personal calibration: the CNN's geometric screen point plus one fixed shift, measured on the
+    still calibration dots. For a model already fine-tuned on this person, this beat CnnGazeModel's ~70 values
+    fitted to ~20 dots (2 recorded sittings, 2026-11-02: 58/84 px head still/moved against 70/109). Moving-dot
+    frames are left out: they made every simple correction worse (58 -> 95 px)."""
+
+    def __init__(self, shift):
+        self.shift = np.asarray(shift, float)
+
+    @classmethod
+    def select(cls, x, y, groups):
+        """Fits on the still dots; also returns the leave-one-dot-out error, like the other models."""
+        dots = groups >= 0
+        offsets = y[dots] - x[dots, 20:22]
+        errors = []
+        for g in np.unique(groups[dots]):
+            held = groups[dots] == g
+            predicted = x[dots, 20:22][held].mean(axis=0) + offsets[~held].mean(axis=0)
+            errors.append(np.linalg.norm(predicted - y[dots][held][0]))
+        return cls(offsets.mean(axis=0)), float(np.mean(errors))
+
+    def refit(self, x, y):
+        # The caller's rows include moving-dot frames, which this model must not use, so keep the calibration fit.
+        return self
+
+    def predict(self, x):
+        return np.atleast_2d(x)[:, 20:22] + self.shift
+
+    def describe(self):
+        return f"shift of the CNN point by {self.shift[0]:+.0f},{self.shift[1]:+.0f} px"
+
+    def to_json(self):
+        return {"kind": "shift", "features": CNN_FEATURES_VERSION, "shift": self.shift.tolist()}
+
+    @classmethod
+    def from_json(cls, data):
+        return cls(data["shift"])
+
+
+class ScaleGazeModel(ShiftGazeModel):
+    """ShiftGazeModel plus a stretch of the CNN point, from the same still dots (6 values). A fresh sitting came out
+    squeezed toward the screen centre, gain 1.12/1.15 on its test dots; its calibration dots showed the same
+    (1.15/1.21), which one shift can't fix: 84/93 px against 53/51 on the same frames (2026-11-02, two test passes
+    with the head barely moved; this model was chosen on that sitting, so a new sitting has to confirm it)."""
+
+    def __init__(self, centre, half, weights):
+        self.centre, self.half, self.weights = (np.asarray(v, float) for v in (centre, half, weights))
+
+    def basis(self, points):
+        return np.hstack([np.ones((len(points), 1)), (points - self.centre) / self.half])
+
+    def fitted(self, points, targets):
+        return type(self)(self.centre, self.half, np.linalg.lstsq(self.basis(points), targets - points, rcond=None)[0])
+
+    @classmethod
+    def select(cls, x, y, groups):
+        """Fits on the still dots; also returns the leave-one-dot-out error, like the other models."""
+        dots = groups >= 0
+        points, targets, ids = x[dots, 20:22], y[dots], groups[dots]
+        low, high = targets.min(axis=0), targets.max(axis=0)
+        model = cls((low + high) / 2, (high - low) / 2, np.zeros((3, 2))).fitted(points, targets)
+        errors = []
+        for g in np.unique(ids):
+            held = ids == g
+            other = model.fitted(points[~held], targets[~held])
+            errors.append(np.linalg.norm(other.predict_points(points[held]).mean(axis=0) - targets[held][0]))
+        return model, float(np.mean(errors))
+
+    def predict_points(self, points):
+        return points + self.basis(points) @ self.weights
+
+    def predict(self, x):
+        return self.predict_points(np.atleast_2d(x)[:, 20:22])
+
+    def describe(self):
+        shift, gain = self.weights[0], 1 + np.diag(self.weights[1:3]) / self.half
+        return f"shift of the CNN point by {shift[0]:+.0f},{shift[1]:+.0f} px, stretch x {gain[0]:.2f} y {gain[1]:.2f}"
+
+    def to_json(self):
+        return {"kind": "scale", "features": CNN_FEATURES_VERSION, "centre": self.centre.tolist(),
+                "half": self.half.tolist(), "weights": self.weights.tolist()}
+
+    @classmethod
+    def from_json(cls, data):
+        return cls(data["centre"], data["half"], data["weights"])
+
+
 def model_from_json(data):
+    if data.get("kind") == "scale":
+        return ScaleGazeModel.from_json(data)
+    if data.get("kind") == "shift":
+        return ShiftGazeModel.from_json(data)
     return CnnGazeModel.from_json(data) if data.get("kind") == "cnn" else GazeModel.from_json(data)
+
+
+def calibration_class(engine):
+    if engine != "cnn":
+        return GazeModel
+    return {"shift": ShiftGazeModel, "scale": ScaleGazeModel}.get(CORRECTION, CnnGazeModel)
 
 
 # --------------------------------------------------------------- display ----
@@ -874,11 +1004,12 @@ def position_user(session, screen, baseline=None):
 
 
 def collect_targets(cap, extract, stage, targets, timing=(MOVE_SECONDS, SETTLE_SECONDS, COLLECT_SECONDS),
-                    trim=True):
+                    trim=True, hold=None):
     """Show each target and collect features while the user fixates it.
 
     timing: (move, settle, collect) seconds. trim: drop outlying samples (for training; an accuracy
-    test keeps every sample so it is scored like benchmark.py scores any tracker).
+    test keeps every sample so it is scored like benchmark.py scores any tracker). hold: (features) -> False
+    pauses the test and restarts the current dot, for the head-moved pass.
     Returns list of (target_px, features[N, F], distances_cm) or None on ESC.
     """
     move_seconds, settle_seconds, collect_seconds = timing
@@ -899,6 +1030,16 @@ def collect_targets(cap, extract, stage, targets, timing=(MOVE_SECONDS, SETTLE_S
             if elapsed >= total:
                 break
             features, info = extract(frame)
+            if hold is not None and not hold(features):
+                start, samples, distances = time.monotonic(), [], []
+                canvas = stage.blank()
+                draw_target(canvas, previous, 0.0)
+                stage.text(canvas, ["Shift your head about 5 cm (a hand's width) to one side and stay there.",
+                                    "The test continues when the camera sees it.      ESC: skip this test"],
+                           y=stage.height - 110, scale=0.8)
+                if stage.show(canvas) == 27:
+                    return None
+                continue
             if elapsed < move_seconds:
                 k = elapsed / move_seconds
                 k = k * k * (3 - 2 * k)
@@ -925,6 +1066,21 @@ def collect_targets(cap, extract, stage, targets, timing=(MOVE_SECONDS, SETTLE_S
             samples = np.array(samples)
             results.append((np.array(target, float), trim_outliers(samples) if trim else samples, distances))
     return results
+
+
+def head_shift_check(still):
+    """hold function for accuracy test 2/2: is the face at least BENCH_HEAD_SHIFT_MM to the side of where it was in
+    test 1/2? (Twice a recorded head-moved pass had the head barely moved, which made its score meaningless.)
+    Median of a few frames, so one bad face fit doesn't restart a dot. None for the landmarks engine (no face position)."""
+    if still.shape[1] <= FACE_X_COLUMN:
+        return None
+    baseline, recent = np.median(still[:, FACE_X_COLUMN]), []
+
+    def hold(features):
+        if features is not None:
+            recent[:] = recent[-4:] + [features[FACE_X_COLUMN]]
+        return bool(recent) and abs(np.median(recent) - baseline) >= BENCH_HEAD_SHIFT_MM
+    return hold
 
 
 def head_move_progress(move, m, baseline, camera):
@@ -1136,6 +1292,9 @@ def calibrate(session, stage, engine, mode="quick"):
         print(f"calibration started anyway with: {', '.join(posture['warnings'])} "
               f"(expected accuracy {posture['expected_accuracy']})", flush=True)
     cap, extract = session.cap, session.extract
+    if RECORD_PATCHES and hasattr(extract, "recorder"):
+        # From here on every frame's face patch is saved (training data for train_gaze.py).
+        extract.recorder = PatchRecorder(DATA_DIR / "sessions" / time.strftime("%Y%m%d-%H%M%S"))
     if not announce(stage, [
         "Calibration",
         "Follow the dot with your EYES and look at its black centre until it shrinks.",
@@ -1165,7 +1324,7 @@ def calibrate(session, stage, engine, mode="quick"):
     canvas = stage.blank()
     stage.text(canvas, ["Computing your gaze model..."])
     stage.show(canvas, 30)
-    model, cv_error = (CnnGazeModel if engine == "cnn" else GazeModel).select(x, y, groups)
+    model, cv_error = calibration_class(engine).select(x, y, groups)
     print(f"calibration: {len(collected)} targets, {len(x)} samples "
           f"({0 if pursuit is None else len(pursuit[0])} pursuit), model {model.describe()}, "
           f"cross-validated error {cv_error:.0f} px")
@@ -1191,13 +1350,14 @@ def validate(cap, extract, stage, model, screen):
                   "Sit normally."] if name == "still" else
                  ["Accuracy test 2/2 - head moved",
                   "Shift your head about 5 cm (a hand's width) to one side and stay there.",
-                  "Keep looking at each dot's centre."])
+                  "The dots wait until the camera sees your head moved. Keep looking at each dot's centre."])
         if not announce(stage, lines):
             if name == "still":
                 return None, None
             break
+        hold = head_shift_check(np.vstack([s for _, s, _ in passes["still"]])) if name == "moved" else None
         collected = collect_targets(cap, extract, stage, benchmark_grid(width, height, *grid), BENCH_TIMING,
-                                    trim=False)
+                                    trim=False, hold=hold)
         if not collected:
             if name == "still":
                 return None, None
@@ -1231,6 +1391,10 @@ def validate(cap, extract, stage, model, screen):
     for name, collected in passes.items():
         cursors[name] = [(target, simulate_cursor(model, samples, precision)) for target, samples, _ in collected]
         bench[name] = score_targets(cursors[name], mm_per_px, distance_cm)
+    if "moved" in passes and passes["still"][0][1].shape[1] > FACE_X_COLUMN:
+        face = {name: np.median(np.vstack([s for _, s, _ in passes[name]])[:, FACE_X_COLUMN]) for name in ("still", "moved")}
+        bench["head_moved_cm"] = float(abs(face["moved"] - face["still"]) / 10)
+        print(f"head moved {bench['head_moved_cm']:.1f} cm between the two test passes", flush=True)
     bench_path = save_bench(bench)
 
     still = bench["still"]
@@ -1288,7 +1452,7 @@ def save_profile(model, screen, camera, report, posture=None):
     PROFILE_PATH.write_text(json.dumps({
         "created": time.strftime("%Y-%m-%d %H:%M:%S"),
         "screen": list(screen[:2]), "camera": camera, "camera_name": camera_names().get(camera),
-        "posture": posture, "model": model.to_json(), "validation": report,
+        "posture": posture, "model": model.to_json(), "validation": report, "gaze_model": GAZE_MODEL,
     }, indent=1))
 
 
@@ -1301,8 +1465,12 @@ def load_profile(screen, camera):
     same_camera = saved_name == name if saved_name and name else data.get("camera") == camera
     if data.get("screen") != list(screen[:2]) or not same_camera:
         return None
-    if data["model"].get("kind") == "cnn" and data["model"].get("features") != CNN_FEATURES_VERSION:
+    if data["model"].get("kind") in ("cnn", "shift", "scale") and data["model"].get("features") != CNN_FEATURES_VERSION:
         print("CNN engine changed since the saved calibration - recalibrating")
+        return None
+    # A personal correction is fitted to one gaze model's outputs and means nothing on another's.
+    if data["model"].get("kind") in ("cnn", "shift", "scale") and data.get("gaze_model", "xgaze") != GAZE_MODEL:
+        print(f"saved calibration belongs to gaze model {data.get('gaze_model', 'xgaze')} - recalibrating")
         return None
     return model_from_json(data["model"]), data.get("validation"), data.get("posture")
 
@@ -1352,6 +1520,15 @@ def calibrate_and_validate(session, screen, engine, mode="quick", benchmark=None
             SAMPLES_PATH.parent.mkdir(parents=True, exist_ok=True)   # first run of the .exe: no folder yet
             np.savez_compressed(SAMPLES_PATH, x=x.astype(np.float32), y=y, groups=groups,
                                 group_pass=np.array(group_pass))
+            recorder = getattr(extract, "recorder", None)
+            if recorder:
+                width, height, width_mm, height_mm = screen[:4]
+                recorder.save(x, y, groups, group_pass, {
+                    "created": time.strftime("%Y-%m-%d %H:%M:%S"), "mode": mode,
+                    "screen_px": [width, height], "screen_mm": [width_mm, height_mm],
+                    "gaze_model": GAZE_MODEL,
+                    "camera_name": session.name, "hfov_deg": session.hfov, "camera_above_mm": session.camera_above,
+                    "posture": posture})
             return x, y
 
         save_samples([])   # kept even if the accuracy test is interrupted
@@ -1366,6 +1543,10 @@ def calibrate_and_validate(session, screen, engine, mode="quick", benchmark=None
         return model, posture
     finally:
         stage.close()
+        recorder = getattr(session.extract, "recorder", None)
+        if recorder:
+            session.extract.recorder = None   # streaming frames are not training data
+            print(f"training data: {len(recorder.rotations)} face patches in {recorder.directory}", flush=True)
 
 
 def refit_profile(screen, camera, engine):
@@ -1374,7 +1555,7 @@ def refit_profile(screen, camera, engine):
         sys.exit(f"no recorded samples at {SAMPLES_PATH}; calibrate instead")
     data = np.load(SAMPLES_PATH)
     x, y, groups = data["x"].astype(np.float64), data["y"], data["groups"]
-    model, cv_error = (CnnGazeModel if engine == "cnn" else GazeModel).select(x, y, groups)
+    model, cv_error = calibration_class(engine).select(x, y, groups)
     try:
         report = json.loads(PROFILE_PATH.read_text()).get("validation")
     except (OSError, ValueError):
@@ -1562,6 +1743,9 @@ def main():
     parser.add_argument("--benchmark", action="store_true",
                         help="run the accuracy test (benchmark.py protocol) after a quick calibration too")
     parser.add_argument("--recalibrate", action="store_true", help="same as --calibration full")
+    parser.add_argument("--record-patches", action=argparse.BooleanOptionalAction, default=None,
+                        help="save each calibration frame's face patch to sessions/ as training data for "
+                             "train_gaze.py (default: on when run from source, off in the .exe)")
     parser.add_argument("--port", type=int, default=4242, help="GazePointer NetworkPort")
     parser.add_argument("--glide-ms", type=float, default=GLIDE_MS,
                         help="cursor ease time constant; lower = snappier, higher = silkier")
@@ -1576,6 +1760,11 @@ def main():
                              "(default); cursor: move the Windows cursor; udp: GazePointer's Network sensor")
     parser.add_argument("--pointer-size", type=int, default=POINTER_DIAMETER,
                         help=f"gaze pointer diameter in pixels (overlay output, default {POINTER_DIAMETER})")
+    parser.add_argument("--correction", choices=("full", "shift", "scale"), default="full",
+                        help="personal calibration (cnn engine). full: ~70 fitted values; shift: one fixed shift from the still dots; scale: shift plus stretch from the still dots. shift and scale are for a model already fine-tuned on this person (--gaze-model personal)")
+    parser.add_argument("--gaze-model", choices=sorted(GAZE_MODELS), default="xgaze",
+                        help="xgaze: ETH-XGaze as published; general: fine-tuned for webcams (train_gaze.py); "
+                             "personal: also fine-tuned on this user's recordings (train_personal.py)")
     parser.add_argument("--engine", choices=("cnn", "landmarks"), default="cnn",
                         help="cnn: ETH-XGaze appearance model (gaze_cnn.py); landmarks: iris/eye-corner curve fit")
     parser.add_argument("--hfov-deg", type=float, default=None,
@@ -1594,7 +1783,11 @@ def main():
                         help="rebuild the saved calibration from its recorded samples (after a model change), then exit")
     args = parser.parse_args()
 
-    global PROFILE_PATH, SAMPLES_PATH
+    global PROFILE_PATH, SAMPLES_PATH, RECORD_PATCHES, GAZE_MODEL, CORRECTION
+    GAZE_MODEL, CORRECTION = args.gaze_model, args.correction
+    gaze_cnn.ONNX_PATH = gaze_cnn.ONNX_PATH.with_name(GAZE_MODELS[GAZE_MODEL])
+    if args.record_patches is not None:
+        RECORD_PATCHES = args.record_patches
     if args.engine == "cnn":
         # Separate files so each engine keeps its own calibration.
         PROFILE_PATH = PROFILE_PATH.with_name("calibration_cnn.json")
@@ -1615,8 +1808,8 @@ def main():
     if not MODEL_PATH.exists():
         sys.exit(f"missing {MODEL_PATH} - download face_landmarker.task from "
                  "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task")
-    if args.engine == "cnn" and not (HERE / "models" / "xgaze_resnet50.onnx").exists():
-        sys.exit("missing models/xgaze_resnet50.onnx - see README (export_xgaze_onnx.py), or use --engine landmarks")
+    if args.engine == "cnn" and not gaze_cnn.ONNX_PATH.exists():
+        sys.exit(f"missing {gaze_cnn.ONNX_PATH} - see README (export_xgaze_onnx.py), or use --engine landmarks")
 
     session = CameraSession(args.engine, screen, args.hfov_deg, args.camera_above_mm)
     if not session.open(args.camera):

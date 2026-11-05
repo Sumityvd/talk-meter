@@ -159,7 +159,8 @@ class CnnGaze:
         return gaze, embedding
 
     def __call__(self, frame, points):
-        """Returns dict(pitchyaw, embedding, screen_px, face_center, patch) or None."""
+        """Returns dict(pitchyaw, embedding, screen_px, direction, rotation, face_center, patch, eyes) or None.
+        rotation: the normalization rotation R (camera -> normalized camera) used for the patch."""
         pose = self.head_pose(points)
         if pose is None:
             return None
@@ -177,5 +178,5 @@ class CnnGaze:
             hit = face_center + direction * (-face_center[2] / direction[2])
             screen_px = self.geometry.to_pixels(hit)
         return {"pitchyaw": np.array([pitch, yaw]), "embedding": embedding[0], "screen_px": screen_px,
-                "direction": direction,
+                "direction": direction, "rotation": rotation,
                 "face_center": face_center, "patch": patch, "eyes": eyes}
