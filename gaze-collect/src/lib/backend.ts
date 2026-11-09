@@ -25,6 +25,15 @@ export interface PendingSession {
 
 const offlineStatus: Status = { alias: "TEST", consented: true, consentVersion: "offline", today: 0, lastLighting: null };
 
+/** An error the server answered with; `status` 401 means this browser's code is no longer valid. */
+export class ServerError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 async function call<T>(body: Record<string, unknown>): Promise<T> {
   const response = await fetch(`${URL_BASE}/functions/v1/gaze-upload`, {
     method: "POST",
@@ -32,12 +41,16 @@ async function call<T>(body: Record<string, unknown>): Promise<T> {
     body: JSON.stringify(body),
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error ?? `Server error ${response.status}`);
+  if (!response.ok) throw new ServerError(response.status, data.error ?? `Server error ${response.status}`);
   return data as T;
 }
 
 export const getStatus = (code: string): Promise<Status> =>
   OFFLINE ? Promise.resolve(offlineStatus) : call<Status>({ action: "status", code });
+
+/** Joins after agreeing to the consent text: the server creates an anonymous participant for this browser. */
+export const register = (version: string): Promise<{ code: string; alias: string }> =>
+  OFFLINE ? Promise.resolve({ code: "OFFLINE", alias: "TEST" }) : call({ action: "register", version, adult: true });
 
 export const giveConsent = (code: string, version: string) =>
   OFFLINE ? Promise.resolve() : call({ action: "consent", code, version });

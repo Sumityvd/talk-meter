@@ -1,8 +1,8 @@
 # gaze-collect
 
-A website that collects webcam gaze-calibration sessions from invited friends, for training a gaze model
-(non-commercial research). A friend opens the site, enters their invite code and does a 2-minute session; when it
-ends, the session uploads by itself. It's a separate site from talk-meter, and unlike talk-meter **it uploads data**,
+A website that collects webcam gaze-calibration sessions from volunteers, for training a gaze model
+(non-commercial research). Anyone with the link can take part: they agree to the consent text, which gives their
+browser an anonymous participant ID, and do a 2-minute session. When it ends, the session uploads by itself. It's a separate site from talk-meter, and unlike talk-meter **it uploads data**,
 so it asks for consent first.
 
 ## How it works
@@ -12,7 +12,9 @@ so it asks for consent first.
    file of about 35 MB. It waits in the browser (IndexedDB) until the upload succeeds, so closing the tab or losing
    the network doesn't lose a finished session.
 2. **On Supabase:** a private bucket and two `gaze_*` tables. The browser's anon key can't read or write any of it.
-   Everything goes through the `gaze-upload` edge function, which checks the invite code, consent, session size and
+   Everything goes through the `gaze-upload` edge function. Agreeing to the consent text registers a participant
+   (an ID like `VK7Q3XA`, plus a secret code kept in that browser), with at most 30 new participants an hour across
+   the site. After that, every request carries the code, and the function checks consent, session size and
    remaining storage. There's no limit on sessions per person.
 3. **On your PC:** `sync/sync_sessions.py` downloads finished sessions, checks them, and converts them with the
    tracker's own `gaze_cnn` code into `D:\gaze-train\friends\<P01>\<session>\` (`patches/`, `session.npz`,
@@ -60,30 +62,35 @@ $env:GAZE_SUPABASE_SERVICE_KEY = "..."
 Use the tracker's Python environment (`C:\Users\91790\GazePointer\tools\webcam-gaze\.venv`):
 
 ```powershell
-python sync\sync_sessions.py --add-participant Rahul     # prints their invite code, once
-python sync\sync_sessions.py                             # about daily: download, convert, delete from Supabase
-python sync\sync_sessions.py --list                      # who has done what, and how much is held in Supabase
-python sync\sync_sessions.py --delete-participant Rahul  # if someone withdraws: removes their data everywhere
+python sync\sync_sessions.py                                # about daily: download, convert, delete from Supabase
+python sync\sync_sessions.py --list                         # every participant, their sessions, what Supabase holds
+python sync\sync_sessions.py --delete-participant VK7Q3XA   # someone withdraws: their ID, shown on their home screen
+python sync\sync_sessions.py --add-participant Rahul        # optional: a named invite code (P01, P02, ...), shown once
 ```
 
-Names stay on your PC, in `D:\gaze-train\friends\participants.json`. Supabase only knows `P01`, `P02`, and so on.
+Each browser is one participant: the same person on two computers, or after clearing their browser data, gets a
+second ID. Names you give with `--add-participant` stay on your PC, in `D:\gaze-train\friends\participants.json`;
+Supabase only knows the IDs.
 
 **Capacity on the Free plan:** 1 GB of storage holds about 28 sessions at a time, and 5 GB of downloads a month covers
 about 140 sessions. Sync regularly. Each session takes about 50 MB on your PC, and the script stops when under 2 GB is
 free. A Free project pauses after a week without activity and must be restored from the dashboard.
 
 There's no per-person limit, so one keen participant can fill `GAZE_MAX_STORED_MB` (about 20 sessions at 700 MB)
-by themselves. Everyone's later sessions then wait in their own browsers until you sync. If a code is being misused,
-`--delete-participant` stops it at once.
+by themselves. Everyone's later sessions then wait in their own browsers until you sync. If an ID is being misused,
+`--delete-participant` stops it at once. Since anyone with the link can join, check `--list` for unexpected numbers
+of participants.
 
 ## Privacy
 
 These are face images of real people, so:
 
 - Review the consent text in `src/App.tsx` and make sure you'll keep its promises. Changing what's promised means
-  changing `CONSENT_VERSION` in `supabase/functions/gaze-upload/logic.ts`, so people are asked again.
+  changing `CONSENT_VERSION` in both `src/lib/protocol.ts` and `supabase/functions/gaze-upload/logic.ts` (a test
+  checks they match), so people are asked again.
 - Keep the service key private, and keep `D:\gaze-train\friends` out of any repository.
-- Only invite adults, delete someone's data when they ask, and don't publish the images.
+- Share the link only where adults will see it, delete someone's data when they give you their ID, and don't
+  publish the images.
 
 ## Known limits
 

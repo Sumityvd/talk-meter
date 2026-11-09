@@ -2,13 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FaceLandmarker } from "@mediapipe/tasks-vision";
 
 import {
-  CONFIGURED, OFFLINE, getStatus, giveConsent, loadPending, removePending, savePending, uploadSession,
+  CONFIGURED, OFFLINE, ServerError, getStatus, giveConsent, loadPending, register, removePending, savePending, uploadSession,
   type PendingSession, type Status,
 } from "./lib/backend";
 import { CalibrationAborted, CalibrationRunner, type View } from "./lib/calibration";
 import { checks, measure, rating, type Check, type Posture } from "./lib/posture";
 import {
-  BLINK_THRESHOLD, CAMERA_ABOVE_MM, CARD_WIDTH_MM, LIGHTINGS, PLAUSIBLE_INCHES, SCREEN_INCHES, diagonalInches, hfovFor,
+  BLINK_THRESHOLD, CAMERA_ABOVE_MM, CARD_WIDTH_MM, CONSENT_VERSION, LIGHTINGS, PLAUSIBLE_INCHES, SCREEN_INCHES, diagonalInches, hfovFor,
   mmPerCssFromInches, type CameraPosition,
 } from "./lib/protocol";
 import { buildSessionFile, sha256Hex, type Manifest } from "./lib/sessionFile";
@@ -31,7 +31,7 @@ const readDevice = () => {
   return device?.mmPerCss ? device : null;
 };
 
-type Stage = "loading" | "join" | "consent" | "setup" | "home" | "starting" | "positioning" | "calibrating" | "saving";
+type Stage = "loading" | "consent" | "setup" | "home" | "starting" | "positioning" | "calibrating" | "saving";
 
 const READY_SECONDS = 2;
 const COUNTDOWN_SECONDS = 3;
@@ -86,12 +86,13 @@ export default function App() {
     }
   }, [refresh]);
 
-  // Start: known code -> status decides the next screen. A finished session from an earlier visit resumes uploading.
+  // Start: a new browser sees the consent text; a known one gets its status, which decides the next screen.
+  // A finished session from an earlier visit resumes uploading.
   useEffect(() => {
     if (!CONFIGURED) return;
     const activeCode = OFFLINE ? "OFFLINE" : code;
     if (!activeCode) {
-      setStage("join");
+      setStage("consent");
       return;
     }
     refresh(activeCode)
@@ -104,10 +105,15 @@ export default function App() {
           void sendPending(activeCode);
         }
       })
-      .catch(() => {
-        localStorage.removeItem("gaze-code");
-        setCode("");
-        setStage("join");
+      .catch((error) => {
+        // Only a refused code starts over. A network problem must not give this person a second ID.
+        if (error instanceof ServerError && error.status === 401) {
+          localStorage.removeItem("gaze-code");
+          setCode("");
+          setStage("consent");
+        } else {
+          setMessage("Couldn't reach the server. Please check your connection and reload the page.");
+        }
       });
     // Runs once on load; later changes go through the screens' own handlers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -193,19 +199,23 @@ export default function App() {
       )}
 
       {stage === "loading" && <p>Loading ...</p>}
-      {stage === "join" && (
-        <Join onJoin={async (entered) => {
-          const next = await refresh(entered);
-          localStorage.setItem("gaze-code", JSON.stringify(entered));
-          setCode(entered);
-          setStage(next.consented ? (device ? "home" : "setup") : "consent");
-        }} />
-      )}
-      {stage === "consent" && status && (
+      {stage === "consent" && (
         <Consent onAgree={async () => {
-          await giveConsent(code, status.consentVersion);
-          await refresh(code);
-          setStage(device ? "home" : "setup");
+          let activeCode = code;
+          if (activeCode) {
+            await giveConsent(activeCode, CONSENT_VERSION); // the text changed since this browser last agreed
+          } else {
+            activeCode = (await register(CONSENT_VERSION)).code;
+            localStorage.setItem("gaze-code", JSON.stringify(activeCode));
+            setCode(activeCode);
+          }
+          await refresh(activeCode);
+          if (device) {
+            setStage("home");
+            void sendPending(activeCode);
+          } else {
+            setStage("setup");
+          }
         }} />
       )}
       {stage === "setup" && (
@@ -258,23 +268,6 @@ export default function App() {
 }
 
 
-function Join({ onJoin }: { onJoin: (code: string) => Promise<void> }) {
-  const [value, setValue] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  return (
-    <form className="card" onSubmit={(e) => {
-      e.preventDefault();
-      setError(null);
-      onJoin(value.trim().toUpperCase()).catch(() => setError("That code isn't valid. Please check it with the person who invited you."));
-    }}>
-      <h2>Enter your invite code</h2>
-      <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="Invite code" autoFocus />
-      <button className="primary" disabled={value.trim().length < 6}>Continue</button>
-      {error && <p className="error">{error}</p>}
-    </form>
-  );
-}
-
 function Consent({ onAgree }: { onAgree: () => Promise<void> }) {
   const [adult, setAdult] = useState(false);
   const [agree, setAgree] = useState(false);
@@ -285,8 +278,8 @@ function Consent({ onAgree }: { onAgree: () => Promise<void> }) {
       <ul>
         <li><b>What's collected:</b> during each session only, images of your face from your webcam, face landmark points, where each dot was, your screen size, camera name and the lighting you choose. No audio. The camera is off the rest of the time.</li>
         <li><b>Why:</b> to train and test a webcam gaze-tracking model, for non-commercial research only.</li>
-        <li><b>Where it goes:</b> it's uploaded to a private Supabase store, then moved to the organiser's own computer and deleted from Supabase. Your name isn't stored with it; you're identified only by a code.</li>
-        <li><b>Your choice:</b> taking part is voluntary. You can stop at any time, and the person who invited you will delete your data if you ask them to.</li>
+        <li><b>Where it goes:</b> it's uploaded to a private Supabase store, then moved to the organiser's own computer and deleted from Supabase. Your name isn't collected; you're identified only by a random participant ID for this browser.</li>
+        <li><b>Your choice:</b> taking part is voluntary and you can stop at any time. Your participant ID is shown on the next screens; to have your data deleted, give it to the person who shared this site with you.</li>
         <li><b>Not public:</b> your images won't be published or shared. Models trained from them may be.</li>
       </ul>
       <label><input type="checkbox" checked={adult} onChange={(e) => setAdult(e.target.checked)} /> I am 18 or older.</label>
@@ -427,6 +420,7 @@ function Home({ status, lighting, onLighting, upload, onRetry, onStart, onSetup 
       ))}
       <p className="muted">The session runs in full screen. Keep this tab in front until it finishes.</p>
       <button className="primary" disabled={!lighting || uploading} onClick={onStart}>Start session</button>
+      <p className="muted">Your participant ID: <b>{status.alias}</b>. To have your data deleted at any time, give this ID to the person who shared this site with you.</p>
       <p><button className="link" onClick={onSetup}>Changed computer, camera or display? Set up again</button></p>
     </div>
   );

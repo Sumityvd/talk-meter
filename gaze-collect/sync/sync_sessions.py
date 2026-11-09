@@ -10,7 +10,7 @@ GAZE_TRACKER_DIR (default D:\\gaze-v2\\webcam-gaze) and GAZE_FRIENDS_DIR (defaul
 Run with the tracker's venv:
   python sync_sessions.py                          download and convert every finished session
   python sync_sessions.py --add-participant Rahul  create an invite code (the name stays on this PC only)
-  python sync_sessions.py --delete-participant Rahul   remove their data from Supabase and this PC
+  python sync_sessions.py --delete-participant Rahul   remove their data from Supabase and this PC (a name, or an ID like VK7Q3XA)
   python sync_sessions.py --list                   participants and session counts
   python sync_sessions.py --convert session.bin OUT    convert a local file (no Supabase)
 """
@@ -19,6 +19,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import struct
@@ -149,7 +150,8 @@ def add_participant(name):
     if name in people:
         sys.exit(f"{name} already has a code (alias {people[name]['alias']}).")
     existing = request("/rest/v1/gaze_participants?select=alias")
-    number = 1 + max([int(p["alias"][1:]) for p in existing] or [0])
+    # Your own invites are P01, P02, ...; people who joined through the site are V + 6 letters.
+    number = 1 + max([int(p["alias"][1:]) for p in existing if re.fullmatch(r"P\d+", p["alias"])] or [0])
     alias = f"P{number:02d}"
     code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(10))
     code_hash = hashlib.sha256(code.encode()).hexdigest()
@@ -167,29 +169,42 @@ def delete_objects(folder):
         request(f"/storage/v1/object/{BUCKET}", "DELETE", {"prefixes": names})
 
 
-def delete_participant(name):
+def delete_participant(who):
+    """`who` is a name you invited, or the participant ID someone gave you (for example VK7Q3XA or P02)."""
     people = load_participants()
-    if name not in people:
-        sys.exit(f"Unknown participant {name}. Known: {', '.join(people) or 'none'}")
-    person = people[name]
+    name = who if who in people else next((k for k, v in people.items() if v["alias"] == who.upper()), None)
+    if name:
+        person = people[name]
+    else:
+        alias = who.strip().upper()
+        if not re.fullmatch(r"[A-Z0-9]{2,12}", alias):
+            sys.exit(f"Not a participant ID or known name: {who}")
+        rows = request(f"/rest/v1/gaze_participants?alias=eq.{alias}&select=id,alias")
+        if not rows:
+            sys.exit(f"Unknown participant {who}. Known names: {', '.join(people) or 'none'}")
+        person = rows[0]
     for row in request(f"/rest/v1/gaze_sessions?participant_id=eq.{person['id']}&select=id"):
         delete_objects(f"{person['id']}/{row['id']}")
     request(f"/rest/v1/gaze_participants?id=eq.{person['id']}", "DELETE")   # sessions go with it (cascade)
     shutil.rmtree(FRIENDS_DIR / person["alias"], ignore_errors=True)
-    del people[name]
-    save_participants(people)
-    print(f"Deleted {name} ({person['alias']}) from Supabase and this PC.")
+    if name:
+        del people[name]
+        save_participants(people)
+    print(f"Deleted {name or 'participant'} ({person['alias']}) from Supabase and this PC.")
 
 
 def list_participants():
-    aliases = {v["id"]: (k, v["alias"]) for k, v in load_participants().items()}
+    names = {v["id"]: k for k, v in load_participants().items()}
+    participants = request("/rest/v1/gaze_participants?select=id,alias,consent_version,created_at&order=created_at")
     sessions = request("/rest/v1/gaze_sessions?select=participant_id,status,size_bytes")
     held = sum(s["size_bytes"] for s in sessions if s["status"] != "synced")
-    for participant_id, (name, alias) in aliases.items():
-        mine = [s for s in sessions if s["participant_id"] == participant_id]
-        print(f"{alias} {name}: {sum(s['status'] == 'synced' for s in mine)} synced, "
-              f"{sum(s['status'] == 'uploaded' for s in mine)} waiting, {sum(s['status'] == 'uploading' for s in mine)} unfinished")
-    print(f"Held in Supabase: {held / 1e6:.0f} MB")
+    for person in participants:
+        mine = [s for s in sessions if s["participant_id"] == person["id"]]
+        name = names.get(person["id"], "(joined through the site)")
+        print(f"{person['alias']} {name}: {sum(s['status'] == 'synced' for s in mine)} synced, "
+              f"{sum(s['status'] == 'uploaded' for s in mine)} waiting, {sum(s['status'] == 'uploading' for s in mine)} unfinished"
+              f" | consent {person['consent_version'] or 'none'}, joined {person['created_at'][:10]}")
+    print(f"{len(participants)} participants. Held in Supabase: {held / 1e6:.0f} MB")
 
 
 def sync():
@@ -234,7 +249,7 @@ def sync():
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--add-participant", metavar="NAME")
-    parser.add_argument("--delete-participant", metavar="NAME")
+    parser.add_argument("--delete-participant", metavar="NAME_OR_ID")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--convert", nargs=2, metavar=("FILE", "OUTPUT"))
     args = parser.parse_args()

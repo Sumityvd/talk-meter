@@ -1,9 +1,13 @@
 /**
  * The rules of gaze-upload, separate from Supabase so they can be tested without a project.
- * Every request carries the participant's invite code; nothing here trusts the browser otherwise.
+ * Anyone with the link can join: agreeing to the consent text registers an anonymous participant, and the browser
+ * keeps that participant's secret code. Every later request carries the code; nothing else from the browser is trusted.
  */
 
-export const CONSENT_VERSION = "2026-11-05";
+export const CONSENT_VERSION = "2026-11-09";
+/** New participants allowed per hour across the whole site, so a script can't create thousands. */
+export const NEW_PARTICIPANTS_PER_HOUR = 30;
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 export const PART_BYTES = 20 * 1024 * 1024;
 export const MAX_SESSION_BYTES = 120 * 1024 * 1024;
 export const LIGHTINGS = ["daylight", "lamp-front", "ceiling", "dim"];
@@ -30,6 +34,9 @@ export interface SessionRow {
 
 export interface Store {
   participantByHash(hash: string): Promise<Participant | null>;
+  /** Creates an already-consented participant; null if the alias or code hash is taken. */
+  createParticipant(row: { alias: string; code_hash: string; consent_version: string }): Promise<Participant | null>;
+  participantsCreatedSince(sinceIso: string): Promise<number>;
   setConsent(participantId: string, version: string): Promise<void>;
   sessionsSince(participantId: string, sinceIso: string): Promise<SessionRow[]>;
   lastLighting(participantId: string): Promise<string | null>;
@@ -61,6 +68,28 @@ export async function hashCode(code: string): Promise<string> {
 export function startOfToday(nowMs: number): string {
   const local = nowMs + IST_OFFSET_MS;
   return new Date(local - (local % 86400000) - IST_OFFSET_MS).toISOString();
+}
+
+export function randomText(length: number): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(length));
+  return [...bytes].map((b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join(""); // 32 letters: no bias
+}
+
+/** Self-registered participants are V + 6 letters; the owner's own invites (sync script) stay P01, P02, ... */
+async function register(store: Store, body: { version?: unknown; adult?: unknown }, nowMs: number) {
+  if (body.version !== CONSENT_VERSION) throw new HttpError(400, "Outdated consent text. Please reload the page.");
+  if (body.adult !== true) throw new HttpError(400, "Participants must be 18 or older");
+  const hourAgo = new Date(nowMs - 3600 * 1000).toISOString();
+  if ((await store.participantsCreatedSince(hourAgo)) >= NEW_PARTICIPANTS_PER_HOUR) {
+    throw new HttpError(429, "Many people are joining right now. Please try again in an hour.");
+  }
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = randomText(20);
+    const alias = `V${randomText(6)}`;
+    const created = await store.createParticipant({ alias, code_hash: await hashCode(code), consent_version: CONSENT_VERSION });
+    if (created) return { code, alias };
+  }
+  throw new HttpError(500, "Could not create a participant ID. Please try again.");
 }
 
 const partName = (index: number) => `part-${String(index).padStart(3, "0")}`;
@@ -96,6 +125,7 @@ async function uploadPlan(store: Store, session: SessionRow) {
 
 // deno-lint-ignore no-explicit-any
 export async function handle(store: Store, body: any, nowMs: number, maxStoredBytes: number): Promise<unknown> {
+  if (body?.action === "register") return register(store, body, nowMs);
   const participant = await participantFor(store, body?.code);
   switch (body?.action) {
     case "status":

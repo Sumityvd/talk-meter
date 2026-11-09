@@ -27,6 +27,18 @@ function ok<T>({ data, error }: { data: T; error: any }): T {
 const store: Store = {
   participantByHash: async (hash) =>
     ok(await db.from("gaze_participants").select("id, alias, active, consent_version").eq("code_hash", hash).maybeSingle()),
+  createParticipant: async (row) => {
+    const { data, error } = await db.from("gaze_participants")
+      .insert({ ...row, consent_at: new Date().toISOString() })
+      .select("id, alias, active, consent_version").single();
+    if (error?.code === "23505") return null; // alias or code already taken: the caller tries new ones
+    return ok({ data, error });
+  },
+  participantsCreatedSince: async (since) => {
+    const { count, error } = await db.from("gaze_participants").select("id", { count: "exact", head: true }).gte("created_at", since);
+    if (error) throw new Error(error.message);
+    return count ?? 0;
+  },
   setConsent: async (id, version) => {
     ok(await db.from("gaze_participants").update({ consent_version: version, consent_at: new Date().toISOString() }).eq("id", id));
   },

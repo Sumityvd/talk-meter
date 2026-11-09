@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
-  CONSENT_VERSION, MAX_SESSION_BYTES, PART_BYTES, handle, hashCode, startOfToday,
+  CONSENT_VERSION, MAX_SESSION_BYTES, NEW_PARTICIPANTS_PER_HOUR, PART_BYTES, handle, hashCode, startOfToday,
   type Participant, type SessionRow, type Store,
 } from "../supabase/functions/gaze-upload/logic";
+import { CONSENT_VERSION as SITE_CONSENT_VERSION } from "../src/lib/protocol";
 
 const NOW = Date.parse("2026-11-05T10:00:00Z");
 const LIMIT = 700 * 1024 * 1024;
@@ -15,7 +16,19 @@ class MemoryStore implements Store {
   parts = new Map<string, Map<string, number>>();
   signed: string[] = [];
 
+  created: string[] = [];
+  takenAliases = new Set<string>();
   participantByHash = async (hash: string) => this.participants.get(hash) ?? null;
+  createParticipant = async (row: { alias: string; code_hash: string; consent_version: string }) => {
+    const aliases = [...this.participants.values()].map((p) => p.alias);
+    if (this.participants.has(row.code_hash) || aliases.includes(row.alias) || this.takenAliases.has(row.alias)) return null;
+    const participant = { id: `p${this.participants.size + 1}`, alias: row.alias, active: true, consent_version: row.consent_version };
+    this.participants.set(row.code_hash, participant);
+    this.created.push(this.now);
+    return participant;
+  };
+  now = new Date(NOW).toISOString();
+  participantsCreatedSince = async (since: string) => this.created.filter((t) => t >= since).length;
   setConsent = async (id: string, version: string) => {
     for (const p of this.participants.values()) if (p.id === id) p.consent_version = version;
   };
@@ -62,6 +75,42 @@ describe("gaze-upload rules", () => {
     expect((await fail(handle(store, { action: "status" }, NOW, LIMIT))).status).toBe(401);
     (await store.participantByHash(await hashCode(CODE)))!.active = false;
     expect((await fail(call({ action: "status" }))).status).toBe(401);
+  });
+
+  it("lets anyone join by agreeing, with a private code and an anonymous ID", async () => {
+    const register = (body: Record<string, unknown>) => handle(store, { action: "register", ...body }, NOW, LIMIT);
+    expect((await fail(register({ version: "2026-11-05", adult: true }))).status).toBe(400);
+    expect((await fail(register({ version: CONSENT_VERSION }))).status).toBe(400);
+    const joined = await register({ version: CONSENT_VERSION, adult: true }) as { code: string; alias: string };
+    expect(joined.code).toMatch(/^[A-Z2-9]{20}$/);
+    expect(joined.alias).toMatch(/^V[A-Z2-9]{6}$/);
+    const status = await handle(store, { action: "status", code: joined.code }, NOW, LIMIT);
+    expect(status).toMatchObject({ alias: joined.alias, consented: true, today: 0 });
+    const plan = await handle(store, { action: "begin", code: joined.code, clientId: "client-0001", size: 10, sha256: SHA, lighting: "dim" }, NOW, LIMIT);
+    expect(plan).toMatchObject({ sessionId: "s0" });
+    expect(store.sessions[0].participant_id).not.toBe("p1"); // not filed under anyone else
+  });
+
+  it("limits new participants per hour across the site, and retries a taken ID", async () => {
+    const register = (nowMs = NOW) => handle(store, { action: "register", version: CONSENT_VERSION, adult: true }, nowMs, LIMIT);
+    const real = crypto.getRandomValues.bind(crypto);
+    let calls = 0;
+    // The first alias drawn is taken: registration must try again rather than fail.
+    crypto.getRandomValues = (<T extends ArrayBufferView>(array: T) => (calls++ === 1 ? (array as unknown as Uint8Array).fill(0) : real(array))) as typeof crypto.getRandomValues;
+    store.takenAliases.add("VAAAAAA");
+    try {
+      expect(await register()).toMatchObject({ alias: expect.not.stringMatching(/^VAAAAAA$/) });
+    } finally {
+      crypto.getRandomValues = real;
+    }
+    for (let i = 1; i < NEW_PARTICIPANTS_PER_HOUR; i++) await register();
+    expect((await fail(register())).status).toBe(429);
+    store.now = new Date(NOW + 2 * 3600 * 1000).toISOString();
+    expect(await register(NOW + 2 * 3600 * 1000)).toHaveProperty("code");
+  });
+
+  it("uses the same consent version as the site's text", () => {
+    expect(SITE_CONSENT_VERSION).toBe(CONSENT_VERSION);
   });
 
   it("accepts a code in any letter case", async () => {

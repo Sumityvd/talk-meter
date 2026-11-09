@@ -3,6 +3,9 @@
  * sessions are recorded like the tracker's own. All positions here are fractions of the screen.
  */
 
+/** The version of the consent text in App.tsx. Change it with the text; the server must have the same value. */
+export const CONSENT_VERSION = "2026-11-09";
+
 export const MOVE_SECONDS = 0.45;
 export const SETTLE_SECONDS = 0.55;
 export const COLLECT_SECONDS = 1.3;
