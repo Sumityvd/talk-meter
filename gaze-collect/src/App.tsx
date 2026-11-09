@@ -398,13 +398,10 @@ function Home({ status, lighting, onLighting, upload, onRetry, onStart, onSetup 
   onStart: () => void;
   onSetup: () => void;
 }) {
-  const atCap = status.today >= status.cap;
   const uploading = !!upload && !upload.error;
   return (
     <div className="card">
-      <h2>Today: {status.today} of 1-2 sessions done</h2>
-      {status.today >= 2 && !atCap && <p>That's today's goal, thank you! One more is fine if you'd like.</p>}
-      {atCap && <p>You've reached today's limit, thank you! Please come back tomorrow.</p>}
+      <h2>{status.today === 0 ? "No sessions yet today" : `Today: ${status.today} session${status.today === 1 ? "" : "s"} done, thank you!`}</h2>
       {upload && (
         <div className="upload">
           {upload.error ? (
@@ -420,20 +417,16 @@ function Home({ status, lighting, onLighting, upload, onRetry, onStart, onSetup 
           )}
         </div>
       )}
-      {!atCap && (
-        <>
-          <h3>What's your lighting right now?</h3>
-          <p>Different lighting each time helps most.</p>
-          {LIGHTINGS.map((l) => (
-            <label key={l.id}>
-              <input type="radio" name="lighting" checked={lighting === l.id} onChange={() => onLighting(l.id)} /> {l.label}
-              {status.lastLighting === l.id && <span className="muted"> (you used this last time)</span>}
-            </label>
-          ))}
-          <p className="muted">The session runs in full screen. Keep this tab in front until it finishes.</p>
-          <button className="primary" disabled={!lighting || uploading} onClick={onStart}>Start session</button>
-        </>
-      )}
+      <h3>What's your lighting right now?</h3>
+      <p>Different lighting each time helps most.</p>
+      {LIGHTINGS.map((l) => (
+        <label key={l.id}>
+          <input type="radio" name="lighting" checked={lighting === l.id} onChange={() => onLighting(l.id)} /> {l.label}
+          {status.lastLighting === l.id && <span className="muted"> (you used this last time)</span>}
+        </label>
+      ))}
+      <p className="muted">The session runs in full screen. Keep this tab in front until it finishes.</p>
+      <button className="primary" disabled={!lighting || uploading} onClick={onStart}>Start session</button>
       <p><button className="link" onClick={onSetup}>Changed computer, camera or display? Set up again</button></p>
     </div>
   );

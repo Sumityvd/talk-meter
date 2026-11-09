@@ -6,7 +6,6 @@
 export const CONSENT_VERSION = "2026-11-05";
 export const PART_BYTES = 20 * 1024 * 1024;
 export const MAX_SESSION_BYTES = 120 * 1024 * 1024;
-export const DAILY_CAP = 3;
 export const LIGHTINGS = ["daylight", "lamp-front", "ceiling", "dim"];
 const IST_OFFSET_MS = 5.5 * 3600 * 1000;
 
@@ -105,7 +104,6 @@ export async function handle(store: Store, body: any, nowMs: number, maxStoredBy
         consented: participant.consent_version === CONSENT_VERSION,
         consentVersion: CONSENT_VERSION,
         today: await completedToday(store, participant.id, nowMs),
-        cap: DAILY_CAP,
         lastLighting: await store.lastLighting(participant.id),
       };
 
@@ -127,9 +125,7 @@ export async function handle(store: Store, body: any, nowMs: number, maxStoredBy
         if (known.sha256 !== sha256 || known.size_bytes !== size) throw new HttpError(409, "Session changed");
         return uploadPlan(store, known); // a retry: only the parts still missing
       }
-      if ((await completedToday(store, participant.id, nowMs)) >= DAILY_CAP) {
-        throw new HttpError(429, `Daily limit reached (${DAILY_CAP} sessions). Thank you! Please come back tomorrow.`);
-      }
+      // No per-person limit: the storage guard below is the only cap.
       if ((await store.storedBytes()) + size > maxStoredBytes) {
         throw new HttpError(507, "Storage is full for now. Your session is safe in this browser and will upload later.");
       }

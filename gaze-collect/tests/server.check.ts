@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
-  CONSENT_VERSION, DAILY_CAP, MAX_SESSION_BYTES, PART_BYTES, handle, hashCode, startOfToday,
+  CONSENT_VERSION, MAX_SESSION_BYTES, PART_BYTES, handle, hashCode, startOfToday,
   type Participant, type SessionRow, type Store,
 } from "../supabase/functions/gaze-upload/logic";
 
@@ -105,13 +105,17 @@ describe("gaze-upload rules", () => {
     expect((await fail(call({ action: "begin", clientId: "client-0001", size: 5, sha256: SHA, lighting: "daylight" }))).status).toBe(409);
   });
 
-  it("enforces the daily cap by Indian day, on finished sessions", async () => {
-    for (let i = 0; i < DAILY_CAP; i++) {
+  it("has no daily limit, and counts finished sessions by Indian day", async () => {
+    for (let i = 0; i < 5; i++) {
       await begin(`client-000${i}`);
       store.sessions[i].status = "uploaded";
     }
-    expect((await fail(begin("client-0009"))).status).toBe(429);
-    await begin("client-0000"); // a retry of a known session still works
+    const sixth = await begin("client-0009");
+    expect(sixth.sessionId).toBe("s5");
+    expect(store.sessions).toHaveLength(6);
+    const status = await call({ action: "status" });
+    expect(status).toMatchObject({ today: 5 });
+    expect(status).not.toHaveProperty("cap");
     const tomorrow = NOW + 24 * 3600 * 1000;
     expect(await call({ action: "status" }, tomorrow)).toMatchObject({ today: 0 });
     expect(startOfToday(Date.parse("2026-11-05T18:29:00Z"))).toBe("2026-11-04T18:30:00.000Z");

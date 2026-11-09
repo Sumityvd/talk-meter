@@ -13,7 +13,6 @@ export interface Status {
   consented: boolean;
   consentVersion: string;
   today: number;
-  cap: number;
   lastLighting: string | null;
 }
 
@@ -24,7 +23,7 @@ export interface PendingSession {
   lighting: string;
 }
 
-const offlineStatus: Status = { alias: "TEST", consented: true, consentVersion: "offline", today: 0, cap: 3, lastLighting: null };
+const offlineStatus: Status = { alias: "TEST", consented: true, consentVersion: "offline", today: 0, lastLighting: null };
 
 async function call<T>(body: Record<string, unknown>): Promise<T> {
   const response = await fetch(`${URL_BASE}/functions/v1/gaze-upload`, {

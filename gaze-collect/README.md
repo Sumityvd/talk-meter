@@ -12,8 +12,8 @@ so it asks for consent first.
    file of about 35 MB. It waits in the browser (IndexedDB) until the upload succeeds, so closing the tab or losing
    the network doesn't lose a finished session.
 2. **On Supabase:** a private bucket and two `gaze_*` tables. The browser's anon key can't read or write any of it.
-   Everything goes through the `gaze-upload` edge function, which checks the invite code, consent, the daily cap
-   (3 sessions), session size and remaining storage.
+   Everything goes through the `gaze-upload` edge function, which checks the invite code, consent, session size and
+   remaining storage. There's no limit on sessions per person.
 3. **On your PC:** `sync/sync_sessions.py` downloads finished sessions, checks them, and converts them with the
    tracker's own `gaze_cnn` code into `D:\gaze-train\friends\<P01>\<session>\` (`patches/`, `session.npz`,
    `meta.json`, `raw/session.bin`), the format `train_gaze.session_items()` reads. It then deletes them from
@@ -71,6 +71,10 @@ Names stay on your PC, in `D:\gaze-train\friends\participants.json`. Supabase on
 **Capacity on the Free plan:** 1 GB of storage holds about 28 sessions at a time, and 5 GB of downloads a month covers
 about 140 sessions. Sync regularly. Each session takes about 50 MB on your PC, and the script stops when under 2 GB is
 free. A Free project pauses after a week without activity and must be restored from the dashboard.
+
+There's no per-person limit, so one keen participant can fill `GAZE_MAX_STORED_MB` (about 20 sessions at 700 MB)
+by themselves. Everyone's later sessions then wait in their own browsers until you sync. If a code is being misused,
+`--delete-participant` stops it at once.
 
 ## Privacy
 
