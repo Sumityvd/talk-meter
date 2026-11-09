@@ -16,8 +16,10 @@ The MediaPipe model is Apache 2.0.
 You need Python 3.12 on Windows. Other systems need one change, given below the commands.
 
 ```powershell
-git clone --depth 1 https://github.com/Sumityvd/talk-meter.git
-cd talk-meter\gaze-pointer\tools\webcam-gaze
+git clone --depth 1 --filter=blob:none --sparse https://github.com/Sumityvd/talk-meter.git
+cd talk-meter
+git sparse-checkout set gaze-pointer/tools/webcam-gaze
+cd gaze-pointer\tools\webcam-gaze
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 mkdir models
@@ -25,7 +27,10 @@ curl.exe -L -o models\xgaze_resnet50.onnx https://github.com/Sumityvd/talk-meter
 curl.exe -L -o models\face_landmarker.task https://github.com/Sumityvd/talk-meter/releases/download/gaze-model-v1/face_landmarker.task
 ```
 
-The files are also listed at <https://github.com/Sumityvd/talk-meter/releases/tag/gaze-model-v1>, with checksums.
+The sparse checkout downloads only this folder. A full clone also brings a C# SDK whose very long file paths can
+fail to check out on Windows.
+
+The model files are also listed at <https://github.com/Sumityvd/talk-meter/releases/tag/gaze-model-v1>, with checksums.
 
 `requirements.txt` installs `onnxruntime-directml`, which runs the model on any DirectX 12 GPU on Windows,
 taking about 9 ms per frame on a GTX 1650 and about 35 ms on the CPU. On Linux or macOS, install `onnxruntime`
