@@ -12,6 +12,10 @@ Other outputs:
 
 No Tobii hardware needed.
 
+**Using it in another app?** See [INTEGRATION.md](INTEGRATION.md): download the models from the
+[gaze-model-v1 release](https://github.com/Sumityvd/talk-meter/releases/tag/gaze-model-v1), then either receive the
+calibrated gaze point over UDP or call `GazeEstimator` from `gaze_example.py`.
+
 Two engines:
 
 | `--engine` | How it works |
